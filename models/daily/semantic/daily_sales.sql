@@ -15,7 +15,6 @@ sales as (
         sale_date >= dateadd('day', -1, current_date)
     {% endif %}
 ),
-
 daily_sales as (
     select
         sale_date
