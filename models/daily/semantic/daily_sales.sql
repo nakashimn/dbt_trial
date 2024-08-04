@@ -12,7 +12,7 @@ sales as (
         {{ ref("sales") }}
     {% if is_incremental() %}
     where
-        sale_date >= dateadd('date', -1, current_date)
+        sale_date >= dateadd('day', -1, current_date)
     {% endif %}
 ),
 
