@@ -1,6 +1,6 @@
 {{ config(
     materialized='table',
-    unique_key=['date_part', 'shop_id']
+    unique_key=['shop_id']
 ) }}
 
 with
@@ -10,7 +10,7 @@ shops as (
     from
         {{ source("raw", "shops") }}
     qualify
-        row_number() over (partition by date_part, shop_id order by date_part desc) = 1
+        row_number() over (partition by shop_id order by date_part desc) = 1
 ),
 final as (
     select
