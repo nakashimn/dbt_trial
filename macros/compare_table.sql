@@ -97,10 +97,7 @@
 // リスト内の文字列を大文字に変換
 ////////////////////////////////////////////////////////////////////////////////
 {% macro translate_upper_on_list(target_list) %}
-    {% set list_upper = [] %}
-    {% for val in target_list %}
-        {% do list_upper.append(val | upper) %}
-    {% endfor %}
+    {% set list_upper = target_list | map("upper") | list %}
     {{ return(list_upper) }}
 {% endmacro %}
 
@@ -122,12 +119,7 @@
     {% set result = run_query(get_col_names) %}
 
     {% set ignore_cols_upper = translate_upper_on_list(ignore_cols) %}
-    {% set col_name_list = [] %}
-    {% for row in result.rows %}
-        {% if row[0] not in ignore_cols_upper %}
-            {% do col_name_list.append(row[0]) %}
-        {% endif %}
-    {% endfor %}
+    {% set col_name_list = result.rows | map(attribute=0) | reject('in', ignore_cols_upper) | list %}
     {{ return(col_name_list) }}
 {% endmacro %}
 
