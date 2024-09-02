@@ -1,0 +1,10 @@
+version: 2
+
+models:
+  - name: daily_sales
+    data_tests:
+      - is_equal_in_prod_and_stg:
+          tags: env_diff
+          ignore_cols: [created_at]
+      - has_permitted_dependencies:
+          depend_on: [core]
