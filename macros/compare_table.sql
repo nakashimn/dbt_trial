@@ -1,94 +1,115 @@
 ////////////////////////////////////////////////////////////////////////////////
 // テーブルの変更前後の差分抽出
+// USAGE:
+//  > dbt run-operation extract_diff --args "{schema_name: <schema>, table_name: <table>, primary_keys: [<primary_key>, ...], ignore_cols: [<ignore_cols>, ...]}"
 ////////////////////////////////////////////////////////////////////////////////
-{% macro extract_diff(schema_name, table_name, primary_keys, ignore_cols=[]) %}
+{% macro extract_diff(schema_name, table_name, primary_keys, ignore_cols=[], reference_db="production", target_db="staging", output_db="development", print_query=false) %}
 
     {{ print("[extract diff]") }}
 
-    {% set reference_db_name = "production" %}
-    {% set target_db_name = "development" %}
-    {% set reference_schema_name = schema_name %}
-    {% set target_schema_name = target.schema ~ "_" ~ schema_name %}
+    {% set ref_db_name = reference_db %}
+    {% set tgt_db_name = target_db %}
+    {% set dst_db_name = output_db %}
+    {% set ref_schema_name = schema_name %}
+    {% set tgt_schema_name = schema_name %}
+    {% set dst_schema_name = schema_name %}
 
-    {% set reference_table = reference_db_name ~ "." ~ reference_schema_name ~ "." ~ table_name %}
-    {% set target_table = target_db_name ~ "." ~ target_schema_name ~ "." ~ table_name %}
-    {% set output_tran_table = target_db_name ~ "." ~ target_schema_name ~ ".diff_" ~ table_name %}
+    {% set ref_table = ref_db_name ~ "." ~ ref_schema_name ~ "." ~ table_name %}
+    {% set tgt_table = tgt_db_name ~ "." ~ tgt_schema_name ~ "." ~ table_name %}
+    {% set dst_tran_table = dst_db_name ~ "." ~ dst_schema_name ~ ".diff_" ~ table_name %}
     {% set primary_keys_upper = translate_upper_on_list(primary_keys) %}
     {% set str_primary_keys = primary_keys | join(", ") %}
     {% set str_ignore_cols = ignore_cols | join(", ") %}
 
     {{ print("=============================================================") }}
-    {{ print("reference: " ~ reference_table) }}
-    {{ print("target: " ~ target_table) }}
-    {{ print("output: " ~ output_tran_table) }}
+    {{ print("reference: " ~ ref_table) }}
+    {{ print("target: " ~ tgt_table) }}
+    {{ print("destination: " ~ dst_tran_table) }}
     {{ print("=============================================================") }}
     {{ print("primary_keys: " ~ str_primary_keys) }}
-    {{ print("ignore_cols: " ~ str_ignore_cols) }}
+    {{ print("ignore_columns: " ~ str_ignore_cols) }}
 
-    // 変更前(reference)のカラム名取得
-    {% set reference_col_list = get_col_name_list(reference_db_name, reference_schema_name, table_name, ignore_cols) %}
-    {% set reference_cols = reference_col_list | join(", ") %}
-    {% set reference_cols_alias = get_col_name_alias_string(reference_col_list, "ref", primary_keys) %}
-
-    // 変更後(target)のカラム名取得
-    {% set target_col_list = get_col_name_list(target_db_name, target_schema_name, table_name, ignore_cols) %}
-    {% set target_cols = target_col_list | join(", ") %}
-    {% set target_cols_alias = get_col_name_alias_string(target_col_list, "tgt", primary_keys) %}
+    // カラム名取得
+    {% set ref_cols = get_cols(ref_db_name, ref_schema_name, table_name, ignore_cols) %}
+    {% set tgt_cols = get_cols(tgt_db_name, tgt_schema_name, table_name, ignore_cols) %}
+    {% set str_tgt_cols = tgt_cols | join(", ") %}
+    {{ print("target_columns: " ~ str_tgt_cols) }}
+    {{ print("=============================================================") }}
 
     // カラムの一致確認
-    {% if not validate_cols(reference_col_list, target_col_list) %}
-        {{ print("[Error] columns have any mismatch.") }}
+    {% if not validate_cols(ref_cols, tgt_cols) %}
+        {{ print(red_text("[Error] Columns have any mismatch.")) }}
         {{ return(false) }}
     {% endif %}
 
-    {{ print("target_cols: " ~ target_cols) }}
-    {{ print("=============================================================") }}
+    // 比較用のsuffix付与
+    {% set ref_cols_alias = get_cols_alias_query(tgt_cols, "REF", primary_keys) %}
+    {% set tgt_cols_alias = get_cols_alias_query(tgt_cols, "TGT", primary_keys) %}
+
+    // 差分テーブルのカラム定義
+    {% set ref_aliased_cols = get_aliased_cols(tgt_cols, "REF", primary_keys) %}
+    {% set tgt_aliased_cols = get_aliased_cols(tgt_cols, "TGT", primary_keys) %}
+    {% set diff_cols = primary_keys + ((ref_aliased_cols + tgt_aliased_cols) | sort) %}
+    {% set str_diff_cols = diff_cols | join(", ") %}
 
     // 差分テーブル(diff_*)作成
     {% set create_diff_table %}
-        create or replace transient table {{ output_tran_table }} as
-        with
-        reference as (
-            select {{ reference_cols }} from {{ reference_table }}
+        CREATE OR REPLACE TRANSIENT TABLE {{ dst_tran_table }} AS
+        WITH
+        ref AS (
+            SELECT {{ str_tgt_cols }} FROM {{ ref_table }}
         ),
-        target as (
-            select {{ target_cols }} from {{ target_table }}
+        tgt AS (
+            SELECT {{ str_tgt_cols }} FROM {{ tgt_table }}
         ),
-        reference_only as (
-            select * from reference
-            except
-            select * from target
+        ref_only AS (
+            SELECT * FROM ref
+            EXCEPT
+            SELECT * FROM tgt
         ),
-        target_only as (
-            select * from target
-            except
-            select * from reference
+        tgt_only AS (
+            SELECT * FROM tgt
+            EXCEPT
+            SELECT * FROM ref
         ),
-        aliased_reference_only as (
-            select {{ reference_cols_alias }} from reference_only
+        aliased_ref_only AS (
+            SELECT {{ ref_cols_alias }} FROM ref_only
         ),
-        aliased_target_only as (
-            select {{ target_cols_alias }} from target_only
+        aliased_tgt_only AS (
+            SELECT {{ tgt_cols_alias }} FROM tgt_only
         ),
-        diff as (
-            select
-                *
-            from
-                aliased_reference_only
-            outer join
-                aliased_target_only
-            using
+        diff AS (
+            SELECT
+                {{ str_diff_cols }}
+            FROM
+                aliased_ref_only
+            FULL OUTER JOIN
+                aliased_tgt_only
+            USING
                 ({{ str_primary_keys }})
         )
-        select
-            *
-        from
-            diff
+        SELECT * FROM diff
     {% endset %}
 
+    // 実行クエリ表示(DEBUG用)
+    {% if print_query %}
+        {{ print(create_diff_table) }}
+    {% endif %}
+
+    // クエリ実行
     {% do run_query(create_diff_table) %}
 
-    {{ print("transient table \"" ~ output_tran_table ~ "\" is created.") }}
+    // 差分ありレコード件数表示
+    {% set n_diffs = count_rows(dst_tran_table) %}
+    {% if n_diffs is none %}
+        {{ print(red_text("[Error] Failed to create \"" ~ dst_tran_table ~ "\".")) }}
+    {% elif n_diffs > 0 %}
+        {{ print("Transient table \"" ~ dst_tran_table ~ "\" is created.") }}
+        {{ print(red_text("\"" ~ table_name ~ "\" has " ~ n_diffs ~ " diffs.")) }}
+    {% else %}
+        {{ print("Transient table \"" ~ dst_tran_table ~ "\" is created.") }}
+        {{ print("\"" ~ table_name ~ "\" has No diff.") }}
+    {% endif %}
 
 {% endmacro %}
 
@@ -96,8 +117,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 // リスト内の文字列を大文字に変換
 ////////////////////////////////////////////////////////////////////////////////
-{% macro translate_upper_on_list(target_list) %}
-    {% set list_upper = target_list | map("upper") | list %}
+{% macro translate_upper_on_list(tgt_list) %}
+    {% set list_upper = tgt_list | map("upper") | list %}
     {{ return(list_upper) }}
 {% endmacro %}
 
@@ -105,51 +126,86 @@
 ////////////////////////////////////////////////////////////////////////////////
 // カラム名のリスト取得
 ////////////////////////////////////////////////////////////////////////////////
-{% macro get_col_name_list(db_name, schema_name, table_name, ignore_cols) %}
-    {% set get_col_names %}
-        select
+{% macro get_cols(db_name, schema_name, table_name, ignore_cols) %}
+    {% set get_cols %}
+        SELECT
             column_name
-        from
+        FROM
             {{ db_name }}.information_schema.columns
-        where
+        WHERE
             table_schema = '{{ schema_name | upper }}'
-        and
+        AND
             table_name = '{{ table_name | upper }}'
     {% endset %}
-    {% set result = run_query(get_col_names) %}
+    {% set result = run_query(get_cols) %}
 
     {% set ignore_cols_upper = translate_upper_on_list(ignore_cols) %}
-    {% set col_name_list = result.rows | map(attribute=0) | reject('in', ignore_cols_upper) | list %}
-    {{ return(col_name_list) }}
+    {% set cols = result.rows | map(attribute=0) | reject('in', ignore_cols_upper) | list %}
+    {{ return(cols) }}
 {% endmacro %}
 
 
 ////////////////////////////////////////////////////////////////////////////////
-// カラム名のエイリアス用クエリ文字列取得
+// suffix付与クエリ生成
 ////////////////////////////////////////////////////////////////////////////////
-{% macro get_col_name_alias_string(col_name_list, prefix, primary_keys) %}
+{% macro get_cols_alias_query(cols, suffix, primary_keys) %}
     {% set primary_keys_upper = translate_upper_on_list(primary_keys) %}
     {% set col_aliases = [] %}
-    {% for col_name in col_name_list %}
-        {% if col_name in primary_keys_upper %}
-            {% do col_aliases.append(col_name) %}
+    {% for col in cols %}
+        {% if col in primary_keys_upper %}
+            {% do col_aliases.append(col) %}
         {% else %}
-            {% do col_aliases.append(col_name ~ " as " ~ prefix ~ "_" ~ col_name ) %}
+            {% do col_aliases.append(col ~ " AS " ~ col ~ "_" ~ suffix ) %}
         {% endif %}
     {% endfor %}
-    {% set str_col_alias = col_aliases | join(", ") %}
-    {{ return(str_col_alias) }}
+    {{ return(col_aliases | join(", ")) }}
+{% endmacro %}
+
+
+////////////////////////////////////////////////////////////////////////////////
+// suffix付カラム名取得
+////////////////////////////////////////////////////////////////////////////////
+{% macro get_aliased_cols(cols, suffix, primary_keys) %}
+    {% set primary_keys_upper = translate_upper_on_list(primary_keys) %}
+    {% set aliased_cols = [] %}
+    {% for col in cols %}
+        {% if col not in primary_keys_upper %}
+            {% do aliased_cols.append(col ~ "_" ~ suffix ) %}
+        {% endif %}
+    {% endfor %}
+    {{ return(aliased_cols) }}
 {% endmacro %}
 
 
 ////////////////////////////////////////////////////////////////////////////////
 // 変更前後のカラム一致確認
 ////////////////////////////////////////////////////////////////////////////////
-{% macro validate_cols(reference_col_list, target_col_list) %}
-    {% for item in target_col_list %}
-        {% if item not in reference_col_list %}
+{% macro validate_cols(ref_cols, tgt_cols) %}
+    {% for item in tgt_cols %}
+        {% if item not in ref_cols %}
             {{ return(false) }}
         {% endif %}
     {% endfor %}
     {{ return(true) }}
+{% endmacro %}
+
+
+////////////////////////////////////////////////////////////////////////////////
+// カラム数取得
+////////////////////////////////////////////////////////////////////////////////
+{% macro count_rows(table_name) %}
+    {% set result = run_query("SELECT COUNT(*) FROM " ~ table_name) %}
+    {% if not result %}
+        {{ return(none) }}
+    {% endif %}
+    {% set n_diffs = result.rows[0][0] %}
+    {{ return(n_diffs) }}
+{% endmacro %}
+
+
+////////////////////////////////////////////////////////////////////////////////
+// 赤文字修飾
+////////////////////////////////////////////////////////////////////////////////
+{% macro red_text(txt) %}
+    {{ return("\033[1;31m" ~ txt ~ "\033[0m")}}
 {% endmacro %}
