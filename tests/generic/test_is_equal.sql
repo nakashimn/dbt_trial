@@ -2,13 +2,13 @@
 ////////////////////////////////////////////////////////////////////////////////
 // test for equality in production and staging
 ////////////////////////////////////////////////////////////////////////////////
-{% test is_equal_in_prod_and_stg(model, ignore_cols=[], evaluate_order=false) %}
+{% test is_equal_in_prod_and_stg(model, ignore_cols=[], evaluate_order=false, reference_db="production") %}
 
     {% if execute %}
         {{ log("target_model: " ~ model.database ~ "." ~ model.schema ~ "." ~ model.name, info=true) }}
 
         // 比較対象のデータベースを定義
-        {% set ref_db_name = "production" %}
+        {% set ref_db_name = reference_db %}
         {% set tgt_db_name = model.database %}
 
         // カラム名取得
@@ -24,34 +24,31 @@
         {% if evaluate_order %}
             {% set str_evaluate_order = "" %}
         {% else %}
-            {% set str_evaluate_order = "order by " ~ str_target_cols %}
+            {% set str_evaluate_order = "ORDER BY " ~ str_target_cols %}
         {% endif %}
 
         // テーブルの一致をハッシュ値で評価
-        with
-        reference as (
-            select
+        WITH
+        reference AS (
+            SELECT
                 hash_agg({{ str_target_cols }})
-            from
+            FROM
                 {{ ref_db_name }}.{{ model.schema }}.{{ model.name }}
             {{ str_evaluate_order }}
         ),
-        target as (
-            select
+        target AS (
+            SELECT
                 hash_agg({{ str_target_cols }})
-            from
+            FROM
                 {{ tgt_db_name }}.{{ model.schema }}.{{ model.name }}
             {{ str_evaluate_order }}
         ),
-        diff as (
-            select * from reference
-            except
-            select * from target
+        diff AS (
+            SELECT * FROM reference
+            EXCEPT
+            SELECT * FROM target
         )
-        select
-            *
-        from
-            diff
+        SELECT * FROM diff
     {% endif %}
 
 {% endtest %}
